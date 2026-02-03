@@ -1,0 +1,9 @@
+[package]
+name = "LiveStateViewer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ssh2 = "0.9"           # SSH 통신용
+ssh-key = "0.6"        # SSH 키 관리용
+crossterm = "0.27"     # 터미널 커서 및 화면 제어
