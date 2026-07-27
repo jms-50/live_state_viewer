@@ -1,11 +1,152 @@
-use sysinfo::{
-    Components, Disks, Networks, System, Users, get_current_pid,
-};
-// use hostname;
 use std::{
-    process::Command,
+    fs,
+    path::PathBuf
 };
+use sysinfo::{
+    Disks, System, Users
+};
+use clap::{
+    Parser, ValueEnum
+};
+use serde::{
+    Serialize, Deserialize
+};
+use directories::ProjectDirs;
 
+const OPTION:[&str; 3] = ["uptime","cpu","disk"];
+const ALL_FEATURES:&[&str; 6] = &["user","system","memory","disk","cpu","uptime"];
+
+#[derive(clap::Subcommand, Debug)]
+enum Modes {
+    Btop,
+    Scan,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum Features {
+    User,
+    System,
+    Memory,
+    Disk,
+    Cpu,
+    Uptime,
+}
+
+// Define the command-line arguments structure
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(long, conflicts_with = "off")]
+    on: Option<Vec<Features>>,
+
+    #[arg(long, conflicts_with = "on")]
+    off: Option<Vec<Features>>,
+
+    #[arg(short, long, help = "Enable or disable system information gathering")]
+    list: bool,
+    
+    #[arg(short, long, help = "Reset the configuration to default settings(system, memory, disk, uptime)")]
+    reset: bool,
+
+    #[command(subcommand)] 
+    mode: Option<Modes>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Config {
+    user: bool,
+    system: bool,
+    memory: bool,
+    disk: bool,
+    cpu: bool,
+    uptime: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            user: false,
+            system: true,
+            memory: true,
+            disk: true,
+            cpu: false,
+            uptime: true,
+        }
+    }
+}
+
+impl Config {
+    // get the path to the configuration file
+    fn config_path() -> PathBuf { 
+        // different for each OS, using the directories crate
+        // get the project directories for the application
+        let proj_dirs = ProjectDirs::from("com", "msJms", "LiveStateViewer")
+            .expect("config directory not found.");
+        
+        // get the configuration directory path
+        let config_dir = proj_dirs.config_dir();
+        
+        // directory is not exist, create it
+        if !config_dir.exists() {
+            fs::create_dir_all(config_dir).expect("config directory creation failed");
+        }
+        
+        config_dir.join("config.toml")
+    }
+
+    /// load the configuration from the file, or return default if not exist
+    fn load() -> Self {
+        let path = Self::config_path();
+        if path.exists() {
+            let content = fs::read_to_string(path).unwrap_or_default();
+            toml::from_str(&content).unwrap_or_else(|_| Config::default())
+        } else {
+            let default_config = Config::default();
+            default_config.save();
+            default_config
+        }
+    }
+
+    /// save the configuration to the file
+    fn save(&self) {
+        let path = Self::config_path();
+        let toml_string = toml::to_string(self).expect("config to toml serialization failed");
+        fs::write(path, toml_string).expect("config file write failed");
+    }
+
+    fn enable(&mut self, feature: Features) {
+        match feature {
+            Features::User => self.user = true,
+            Features::System => self.system = true,
+            Features::Memory => self.memory = true,
+            Features::Disk => self.disk = true,
+            Features::Cpu => self.cpu = true,
+            Features::Uptime => self.uptime = true,
+        }
+    }
+
+    fn disable(&mut self, feature: Features) {
+        match feature {
+            Features::User => self.user = false,
+            Features::System => self.system = false,
+            Features::Memory => self.memory = false,
+            Features::Disk => self.disk = false,
+            Features::Cpu => self.cpu = false,
+            Features::Uptime => self.uptime = false,
+        }
+    }
+
+    fn is_enabled(&self, feature: Features) -> bool {
+        match feature {
+            Features::User => self.user,
+            Features::System => self.system,
+            Features::Memory => self.memory,
+            Features::Disk => self.disk,
+            Features::Cpu => self.cpu,
+            Features::Uptime => self.uptime,
+        }
+    }
+}
 
 fn format_bytes(bytes:u64) -> String{
     const UNITS:[&str; 5] = ["B","KiB","MiB","GiB","TiB"]; 
@@ -26,97 +167,138 @@ fn format_bytes(bytes:u64) -> String{
 }
 
 fn main() {
-    // Please note that we use "new_all" to ensure that all lists of
-    // CPUs and processes are filled!
-
+    // if the system is supported, we can proceed with gathering and displaying system information
+    // if the system is not supported, we will print a message indicating that the OS is not supported
     if sysinfo::IS_SUPPORTED_SYSTEM {
-        let mut sys = System::new_all();
-        
-        // First we update all information of our `System` struct.
-        sys.refresh_all();
-
-        // Users
-        let users = Users::new_with_refreshed_list();
-        
-
-        println!("==================================================");
-        // println!("host name = {:?}",host_name);
-        
-        // RAM and swap information:
-        println!("=> RAM, swap info:");
-        println!("total memory:            {}", format_bytes(sys.total_memory()));
-        println!("used memory :            {}", format_bytes(sys.used_memory()));
-        println!("total swap  :            {}", format_bytes(sys.total_swap()));
-        println!("used swap   :            {}", format_bytes(sys.used_swap()));
-        println!();
-        // Display system information:
-        println!("=> system info:");
-        println!("System name:             {:?}", System::name().unwrap_or_else(|| "<unknown>".to_owned()));
-        println!("System kernel version:   {:?}", System::kernel_version().unwrap_or_else(|| "<unknown>".to_owned()));
-        println!("System OS version        {:?}", System::long_os_version().unwrap_or_else(|| "<unknown>".to_owned()));
-        println!("System host name:        {:?}", System::host_name().unwrap_or_else(|| "<unknown>".to_owned()));
-        println!();
-
-        // Display proceesed user informaiton
-        println!("=> user info:");
-        if let Ok(current_pid) = get_current_pid() {
-            if let Some(process) = sys.process(current_pid) {
-                if let Some(user_id) = process.user_id() {
-                    if let Some(user )= users.get_user_by_id(user_id) {
-                        println!("User name:               {:?}", user.name());
-                        println!("UID:                     {:?}", user.id());
-                        println!("GID:                     {:?}", user.group_id());
+        let args = Args::parse();
+        match args.mode {
+            Some(Modes::Btop) => {
+                println!("System information gathering is enabled.");
+            }
+            Some(Modes::Scan) => {
+                println!("System information gathering is disabled.");
+            }
+            None => {
+                if args.reset {
+                    let default_config = Config::default();
+                    default_config.save();
+                    return;
+                }
+                let mut config = Config::load();
+                if let Some(features) = args.on {
+                    for feature in features {
+                        config.enable(feature);
                     }
+                    config.save();
+                }
+                else if let Some(features) = args.off {
+                    for feature in features {
+                        config.disable(feature);
+                    } 
+                    config.save();
+                }
+                else if args.list {
+                    for feature in Features::value_variants() {
+                        let status = config.is_enabled(*feature);
+                        println!("{:?}: {}",feature,status);
+                    }
+                } else {
+                    let mut sys = System::new_all(); // info initialization
+                    sys.refresh_all(); // Update all information of System struct.
+                    println!("==================================================");
+                    // Users information:
+                    // Display proceesed user informaiton
+                    if config.is_enabled(Features::User) {
+                        let users = Users::new_with_refreshed_list();
+                        println!("=> user info:");
+                        if let Ok(current_pid) = sysinfo::get_current_pid() {
+                            if let Some(process) = sys.process(current_pid) {
+                                if let Some(user_id) = process.user_id() {
+                                    if let Some(user )= users.get_user_by_id(user_id) {
+                                        let user_name = user.name();
+                                        let user_id = user.id();
+                                        let user_group_id = user.group_id();
+                                        println!("User name:               {:?}", user_name);
+                                        println!("UID:                     {:?}", user_id);
+                                        println!("GID:                     {:?}", user_group_id);
+                                    }
+                                }
+                            }
+                        }
+                        println!();
+                    }
+                    // System information:
+                    // Display System info Object
+                    if config.is_enabled(Features::System) {
+                        let host_name = System::host_name().unwrap_or_else(|| "<unknown>".to_owned());
+                        let os_version = System::long_os_version().unwrap_or_else(|| "<unknown>".to_owned());
+                        let kernel_version = System::kernel_version().unwrap_or_else(|| "<unknown>".to_owned());
+                        let kernel_name = System::name().unwrap_or_else(|| "<unknown>".to_owned());
+                        println!("=> system info:");
+                        println!("System host name:    :   {:?}", host_name.split('.').next().unwrap_or_else(|| "<unknown>"));
+                        println!("System OS version    :   {:?}", os_version);
+                        println!("System kernel name   :   {:?}", kernel_name);
+                        println!("System kernel version:   {:?}", kernel_version);
+                        println!();
+                    }
+                    // RAM and swap information:
+                    // Display RAM and swap info Object    
+                    if config.is_enabled(Features::Memory) {
+                        let total_memory: u64 = sys.total_memory();
+                        let used_memory: u64 = sys.used_memory(); 
+                        let total_swap: u64 = sys.total_swap();
+                        let used_swap: u64 = sys.used_swap();
+                        // RAM and swap info Display
+                        println!("=> Memory(RAM, SWAP) info:");
+                        println!("Total Memory:            {}", format_bytes(total_memory));
+                        println!("Used Memory :            {}", format_bytes(used_memory));
+                        println!("Total SWAP  :            {}", format_bytes(total_swap));
+                        println!("Used SWAP   :            {}", format_bytes(used_swap));
+                        println!();
+                    }
+                    // Disk information:
+                    // Display Disk info Object
+                    if config.is_enabled(Features::Memory) {
+                        println!("=> Disk info:");
+                        let disks = Disks::new_with_refreshed_list();
+                        let mut seen_disks = Vec::new();
+                        for disk in &disks {
+                            let disk_key = (disk.name().to_os_string(), disk.total_space());
+                            if !seen_disks.contains(&disk_key) {
+                                seen_disks.push(disk_key);
+                            } else {
+                                continue
+                            }
+                            println!("Disk name      :         {:?}", disk.name());
+                            println!("Total SPACE    :         {:?}", format_bytes(disk.total_space()));
+                            println!("Using SPCAE    :         {:?}", format_bytes(disk.total_space() - disk.available_space()));
+                            println!("Available SPACE:         {:?}", format_bytes(disk.available_space()));
+                            println!();
+                        }
+                    }
+                    // CPU information:
+                    // Display CPU info Object
+                    if config.is_enabled(Features::Cpu) {
+                        println!("=> CPU info:");
+                        let cpus = sys.cpus();
+                        for (i, cpu) in cpus.iter().enumerate() {
+                            println!("CPU {}: {} MHz", i, cpu.frequency());
+                        }
+                        println!("NB CPUs:                 {}", cpus.len());
+                        println!();
+                    }
+                    // Uptime information:
+                    if config.is_enabled(Features::Uptime) {
+                        println!("UPtime:                  {}", System::uptime());
+                    }
+                    println!("==================================================");
+                    // println!("if you want see {:?},\nLiveStateViewer --on {:?}",ALL_FEATURES, ALL_FEATURES)
                 }
             }
         }
-        println!();
-
-        println!("=> disks:");
-        let disks = Disks::new_with_refreshed_list();
-        for disk in &disks {
-            println!("disk name                {:?}", disk.name());
-            println!("{:?} total space         {:?}", disk.name(),disk.total_space());
-            println!("{:?} available space     {:?}", disk.name(),disk.available_space());
-            println!();
-        }
-
-        // Number of CPUs:
-        println!("NB CPUs:                 {}", sys.cpus().len());
         
-        println!("UPtime:                  {}", System::uptime());
-
-        println!("==================================================");
-    }
+    } 
     else{
         println!("This OS isn't supported.")
     }
-    
-    // // Display processes ID, name and disk usage:
-    // for (pid, process) in sys.processes() {
-    //     println!("[{pid}] {:?} {:?}", process.name(), process.disk_usage());
-    // }
-
-    // We display all disks' information:
-    
-
-    // // Network interfaces name, total data received and total data transmitted:
-    // let networks = Networks::new_with_refreshed_list();
-    // println!("=> networks:");
-    // for (interface_name, data) in &networks {
-    //     println!(
-    //         "{interface_name}: {} B (down) / {} B (up)",
-    //         data.total_received(),
-    //         data.total_transmitted(),
-    //     );
-    //     // If you want the amount of data received/transmitted since last call
-    //     // to `Networks::refresh`, use `received`/`transmitted`.
-    // }
-
-    // // Components temperature:
-    // let components = Components::new_with_refreshed_list();
-    // println!("=> components:");
-    // for component in &components {
-    //     println!("{component:?}");
-    // }
 }
